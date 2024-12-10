@@ -2,15 +2,14 @@ import { Telegraf } from "telegraf";
 import { Agent, AtpAgent, BskyAgent } from "@atproto/api";
 import { config } from "./config.ts";
 import type { TelegramMessage } from "./types.ts";
+import type { Update } from "telegraf/types";
+import { message } from "telegraf/filters";
 
 export class TelegramBlueSkyBot {
-  private telegram: Telegraf;
   private bluesky: BskyAgent;
-  private lastUpdateId = 0;
+  private lastPostDate: Date = new Date(0); // Keep track of the last post we've processed
 
   constructor() {
-    this.telegram = new Telegraf(config.telegram.botToken);
-
     this.bluesky = new BskyAgent({
       service: "https://bsky.social",
     });
@@ -22,10 +21,37 @@ export class TelegramBlueSkyBot {
       identifier: config.bluesky.identifier,
       password: config.bluesky.password,
     });
+  }
 
-    // Create media directory if it doesn't exist
-    if (!(await this.fileExists(config.mediaDir))) {
-      await Deno.mkdir(config.mediaDir);
+  // Parse the RSS feed and get new posts
+  private async getFeedItems() {
+    try {
+      const response = await fetch("https://infobrics.org/rss/en/");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const text = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, "text/xml");
+
+      if (!doc) {
+        throw new Error("Failed to parse RSS feed");
+      }
+
+      // Get all items from the feed
+      const items = Array.from(doc.getElementsByTagName("item"));
+
+      // Convert items to a more usable format
+      return items.map((item) => ({
+        title: item.querySelector("title")?.textContent || "",
+        description: item.querySelector("description")?.textContent || "",
+        pubDate: new Date(item.querySelector("pubDate")?.textContent || ""),
+        link: item.querySelector("link")?.textContent || "",
+      }));
+    } catch (error) {
+      console.error("Error fetching RSS feed:", error);
+      return [];
     }
   }
 
@@ -85,62 +111,6 @@ export class TelegramBlueSkyBot {
         }
         : undefined,
     });
-  }
-
-  private async processMessage(message: TelegramMessage) {
-    try {
-      const text = message.text || message.caption || "";
-      let mediaPath: string | undefined;
-
-      // Handle photos
-      if (message.photo && message.photo.length > 0) {
-        // Get the highest quality photo (last in array)
-        const photo = message.photo[message.photo.length - 1];
-        mediaPath = await this.downloadMedia(photo.file_id);
-      }
-
-      // Handle videos
-      if (message.video) {
-        mediaPath = await this.downloadMedia(message.video.file_id);
-      }
-
-      // Cross-post to Bluesky
-      await this.uploadToBluesky(text, mediaPath);
-
-      // Cleanup
-      if (mediaPath && (await this.fileExists(mediaPath))) {
-        await Deno.remove(mediaPath);
-      }
-    } catch (error) {
-      console.error("Error processing message:", error);
-    }
-  }
-
-  async pollUpdates() {
-    while (true) {
-      try {
-        const updates = await this.telegram.telegram.getUpdates(
-          30, // timeout in seconds
-          100, // limit - reasonable default
-          this.lastUpdateId + 1, // offset
-          ["message"], // allowedUpdates - we only care about messages
-        );
-
-        for (const update of updates) {
-          if (
-            update.message &&
-            update.message.chat.id.toString() === config.telegram.channelId
-          ) {
-            await this.processMessage(update.message);
-          }
-          this.lastUpdateId = update.update_id;
-        }
-      } catch (error) {
-        console.error("Error polling updates:", error);
-        // Wait before retrying on error
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    }
   }
 
   async start() {
