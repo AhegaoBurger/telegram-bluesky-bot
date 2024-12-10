@@ -1,9 +1,6 @@
-import { Telegraf } from "telegraf";
 import { Agent, AtpAgent, BskyAgent } from "@atproto/api";
 import { config } from "./config.ts";
-import type { TelegramMessage } from "./types.ts";
-import type { Update } from "telegraf/types";
-import { message } from "telegraf/filters";
+import { DOMParser, Element } from "jsr:@b-fuze/deno-dom";
 
 export class TelegramBlueSkyBot {
   private bluesky: BskyAgent;
@@ -67,50 +64,49 @@ export class TelegramBlueSkyBot {
     }
   }
 
-  private async downloadMedia(fileId: string): Promise<string> {
-    const filePath = `${config.mediaDir}/${fileId}`;
-    const fileInfo = await this.telegram.telegram.getFile(fileId);
+  private async postToBluesky(
+    item: { title: string; description: string; link: string },
+  ) {
+    // Create a post formatted nicely for Bluesky
+    const text = `${item.title}\n\n${item.link}`;
 
-    // Telegram's file download URL
-    const fileUrl =
-      `https://api.telegram.org/file/bot${config.telegram.botToken}/${fileInfo.file_path}`;
-
-    // Download file
-    const response = await fetch(fileUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
-
-    // Save file
-    await Deno.writeFile(filePath, uint8Array);
-
-    return filePath;
+    try {
+      await this.bluesky.post({
+        text: text.slice(0, 300), // Respect Bluesky's character limit
+      });
+      console.log("Posted to Bluesky:", item.title);
+    } catch (error) {
+      console.error("Error posting to Bluesky:", error);
+    }
   }
 
-  private async uploadToBluesky(text: string, mediaPath?: string) {
-    const images = [];
+  async pollUpdates() {
+    while (true) {
+      try {
+        const items = await this.getFeedItems();
 
-    if (mediaPath && (await this.fileExists(mediaPath))) {
-      const file = await Deno.readFile(mediaPath);
-      const upload = await this.bluesky.uploadBlob(file, {
-        encoding: "image/jpeg",
-      });
+        // Sort items by date, newest first
+        const sortedItems = items.sort((a, b) =>
+          b.pubDate.getTime() - a.pubDate.getTime()
+        );
 
-      images.push({
-        image: upload.data.blob,
-        alt: "Shared from Telegram",
-      });
-    }
-
-    // Create post
-    await this.bluesky.post({
-      text: text.slice(0, 300), // Bluesky character limit
-      embed: images.length > 0
-        ? {
-          $type: "app.bsky.embed.images",
-          images,
+        // Post any new items we haven't seen before
+        for (const item of sortedItems) {
+          if (item.pubDate > this.lastPostDate) {
+            await this.postToBluesky(item);
+            this.lastPostDate = item.pubDate;
+          }
         }
-        : undefined,
-    });
+
+        // Wait for 5 minutes before checking again
+        // This is a reasonable interval for RSS feeds
+        await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
+      } catch (error) {
+        console.error("Error in poll loop:", error);
+        // Wait before retrying on error
+        await new Promise((resolve) => setTimeout(resolve, 30000));
+      }
+    }
   }
 
   async start() {

@@ -4,6 +4,7 @@
   },
   "imports": {
     "@atproto/api": "npm:@atproto/api@^0.13.19",
+    "@b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@^0.1.48",
     "@std/assert": "jsr:@std/assert@1",
     "@std/path": "jsr:@std/path@^1.0.8",
     "telegraf": "npm:telegraf@^4.16.3"
