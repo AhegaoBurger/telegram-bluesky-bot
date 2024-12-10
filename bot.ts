@@ -1,18 +1,17 @@
-// import { Agent, exists, Telegram } from "./deps.ts";
 import { Telegraf } from "telegraf";
-import { Agent } from "@atproto/api";
+import { Agent, AtpAgent, BskyAgent } from "@atproto/api";
 import { config } from "./config.ts";
 import type { TelegramMessage } from "./types.ts";
 
 export class TelegramBlueSkyBot {
   private telegram: Telegraf;
-  private bluesky: Agent;
+  private bluesky: BskyAgent;
   private lastUpdateId = 0;
 
   constructor() {
     this.telegram = new Telegraf(config.telegram.botToken);
 
-    this.bluesky = new Agent({
+    this.bluesky = new BskyAgent({
       service: "https://bsky.social",
     });
   }
@@ -25,14 +24,26 @@ export class TelegramBlueSkyBot {
     });
 
     // Create media directory if it doesn't exist
-    if (!(await exists(config.mediaDir))) {
+    if (!(await this.fileExists(config.mediaDir))) {
       await Deno.mkdir(config.mediaDir);
+    }
+  }
+
+  private async fileExists(filepath: string): Promise<boolean> {
+    try {
+      await Deno.stat(filepath);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return false;
+      }
+      throw error;
     }
   }
 
   private async downloadMedia(fileId: string): Promise<string> {
     const filePath = `${config.mediaDir}/${fileId}`;
-    const fileInfo = await this.telegram.getFile(fileId);
+    const fileInfo = await this.telegram.telegram.getFile(fileId);
 
     // Telegram's file download URL
     const fileUrl =
@@ -50,9 +61,9 @@ export class TelegramBlueSkyBot {
   }
 
   private async uploadToBluesky(text: string, mediaPath?: string) {
-    let images = [];
+    const images = [];
 
-    if (mediaPath && (await exists(mediaPath))) {
+    if (mediaPath && (await this.fileExists(mediaPath))) {
       const file = await Deno.readFile(mediaPath);
       const upload = await this.bluesky.uploadBlob(file, {
         encoding: "image/jpeg",
@@ -97,7 +108,7 @@ export class TelegramBlueSkyBot {
       await this.uploadToBluesky(text, mediaPath);
 
       // Cleanup
-      if (mediaPath && (await exists(mediaPath))) {
+      if (mediaPath && (await this.fileExists(mediaPath))) {
         await Deno.remove(mediaPath);
       }
     } catch (error) {
@@ -108,10 +119,12 @@ export class TelegramBlueSkyBot {
   async pollUpdates() {
     while (true) {
       try {
-        const updates = await this.telegram.getUpdates({
-          offset: this.lastUpdateId + 1,
-          timeout: 30,
-        });
+        const updates = await this.telegram.telegram.getUpdates(
+          30, // timeout in seconds
+          100, // limit - reasonable default
+          this.lastUpdateId + 1, // offset
+          ["message"], // allowedUpdates - we only care about messages
+        );
 
         for (const update of updates) {
           if (
